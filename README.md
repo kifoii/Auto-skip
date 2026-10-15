@@ -1,6 +1,6 @@
-## 全程由AI生成
+# 全程由AI生成
 
-# Auto skip
+## Auto skip
 
 Folia 的播放失败：歌下架了它自己会倒计时跳过，但音源暂时取不到的时候，它只是停下来弹一张「跳过 / 重试」的卡片，然后一直等你点。
 
@@ -18,7 +18,7 @@ Folia 内部有按失败原因分发的策略表。绝大多数情况宿主自�
 
 酷狗那边取不到 URL 时抛的是 `not-playable`，这个 code 在分类器里归到 `unknown`，正好落在这两行上。于是「明明是音源的问题，却要手动跳过」就发生了。
 
-## 怎么做到的
+### 怎么做到的
 
 Folium 1.4 没有播放失败事件，也没有拦截 toast 的钩子。提示卡的数据是 bootstrap 里一个 React `useState`，连 `internals` 暴露的 zustand store 里都没有它。能下手的只有提示卡的 DOM。
 
@@ -31,7 +31,7 @@ Folium 1.4 没有播放失败事件，也没有拦截 toast 的钩子。提示�
 
 React 属性名是 `__reactProps$` 加一串随机字符，`readClickHandler()` 负责找。哪天读不到了会自动退回点击，不会默默什么都不做。
 
-## 功能
+### 功能
 
 | key | 默认 | 说明 |
 |---|---|---|
@@ -46,7 +46,7 @@ React 属性名是 `__reactProps$` 加一串随机字符，`readClickHandler()` 
 
 `maxConsecutiveSkips` 管连续几首就停手，`maxSkipsPerMinute` 管出手频率，防的是整张歌单全挂的时候疯狂连跳。
 
-## 安装
+### 安装
 
 1. 把 `mod.json` 和 `client.mjs` 放进 `%APPDATA%\Folia\mods\auto-skip\`
 2. 选项 → 模组 → 重载（或者直接重启 Folia）
