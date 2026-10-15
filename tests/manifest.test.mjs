@@ -85,7 +85,9 @@ check('声明了 folium 1', man.folium === 1, String(man.folium));
 for (const p of man.permissions ?? []) {
   check(`permission "${p}" 是宿主已知权限`, m.KNOWN_PERMISSIONS.has(p));
 }
-check('host range 满足 0.7.19', m.satisfiesHostRange('0.7.19', man.folia) === true);
+// 1.2.0 起底部是 0.7.20：playback.failed 事件与原生开关都是这一版才有的。
+check('host range 满足 0.7.20', m.satisfiesHostRange('0.7.20', man.folia) === true);
+check('host range 排除过旧的 0.7.19', m.satisfiesHostRange('0.7.19', man.folia) === false);
 
 const plan = m.resolveLoadPlan(new Map([[man.id, man]]), {
   roots: [man.id],

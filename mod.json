@@ -2,12 +2,13 @@
   "folium": 1,
   "id": "auto-skip",
   "name": "Auto skip",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "kifoii",
-  "description": "接管播放失败提示：「暂时无法播放这首歌」自动跳过，并可接管原版的「下架 / 播放出错」倒计时与连续跳过上限。",
+  "description": "与原版「无法播放时自动跳过」配合：登录类与网络类失败也能跳，可调倒计时与连续跳过上限，并在原版设置项下方加一排快捷开关。",
   "client": "client.mjs",
+  "preview": "preview.png",
   "permissions": [
     "playback.control"
   ],
-  "folia": ">=0.7.0 <0.8.0"
+  "folia": ">=0.7.20 <0.8.0"
 }
