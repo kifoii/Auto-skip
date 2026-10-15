@@ -1,3 +1,5 @@
+## AI生成
+
 # Auto skip
 
 Folia 的播放失败：歌下架了它自己会倒计时跳过，但音源暂时取不到的时候，它只是停下来弹一张「跳过 / 重试」的卡片，然后一直等你点。
@@ -48,10 +50,6 @@ React 属性名是 `__reactProps$` 加一串随机字符，`readClickHandler()` 
 
 1. 把 `mod.json` 和 `client.mjs` 放进 `%APPDATA%\Folia\mods\auto-skip\`
 2. 选项 → 模组 → 重载（或者直接重启 Folia）
-
-## 声明
-
-1.来自AI
 
 MIT。
 
