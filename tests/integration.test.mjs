@@ -560,5 +560,79 @@ const mod = await import('../client.mjs');
   dispose();
 }
 
+// 22. 回归：撞限流后不能空转刷日志。
+//
+// 真实事故：performSkip 在限流时直接 return，noteToastAttempt() 没跑到，
+// 每卡预算永不消耗，scheduleSkip 看到 false 就重扫，31 秒刷出 3610 条警告
+// （中位间隔 0ms，同一毫秒 24 条）。这里钉住「告警条数必须是常数级」。
+{
+  clearToasts();
+  const { folium, logs } = makeFolium({ maxSkipsPerMinute: 2, maxConsecutiveSkips: 0 });
+  const dispose = mod.default(folium);
+  // 一张常驻的卡 + 反复触发扫描，模拟宿主不断重发失败卡
+  const t = addToast(unavailableToast());
+  for (let i = 0; i < 40; i += 1) {
+    lastObserver().fire([t]);
+    await sleep(25);
+  }
+  const warns = logs.filter((l) => l[0] === 'warn').length;
+  check('限流后没有刷屏（告警 <= 12 条）', warns <= 12, 'warns=' + warns);
+  dispose();
+}
+
+// 23. 回归：撞限流时也要消耗每卡预算（不能无限重排同一张卡）
+{
+  clearToasts();
+  const { folium } = makeFolium({ maxSkipsPerMinute: 1, maxConsecutiveSkips: 0 });
+  const dispose = mod.default(folium);
+  const t = addToast(unavailableToast());
+  lastObserver().fire([t]);
+  await sleep(400);
+  const first = t._buttons[0].handlerCalls;
+  for (let i = 0; i < 30; i += 1) {
+    lastObserver().fire([t]);
+    await sleep(20);
+  }
+  check('限流后同一张卡不再被反复调用', t._buttons[0].handlerCalls === first, 
+    'first=' + first + ' now=' + t._buttons[0].handlerCalls);
+  dispose();
+}
+
+// 24. 退避是暂时的：窗口过后仍能继续跳过。
+//     用连跳上限触发退避（限流窗口是 60 秒，等不起）；退避过后靠
+//     「播放跑起来了」把连续计数归零，就能接着跳。
+{
+  clearToasts();
+  const { folium, playback } = makeFolium({
+    maxConsecutiveSkips: 1,
+    maxSkipsPerMinute: 60,
+    resumeAfterGiveUp: false,
+  });
+  const dispose = mod.default(folium);
+  const t1 = addToast(unavailableToast());
+  lastObserver().fire([t1]);
+  await sleep(500);
+  check('第一张卡已跳过', t1._buttons[0].handlerCalls >= 1);
+
+  // 第二张卡撞连跳上限 → 进入退避
+  const t2 = addToast(unavailableToast({ reactKey: 'testkey2' }));
+  lastObserver().fire([t2]);
+  await sleep(400);
+  check('撞上限时不跳', t2._buttons[0].handlerCalls === 0, 'calls=' + t2._buttons[0].handlerCalls);
+
+  // 退避窗口过掉，并且播放真的跑起来了（连续计数归零）
+  playback.state = 'playing';
+  await sleep(5600);
+  const t3 = addToast(unavailableToast({ reactKey: 'testkey3' }));
+  lastObserver().fire([t3]);
+  await sleep(700);
+  check(
+    '退避过后新卡仍会跳',
+    t3._buttons[0].handlerCalls >= 1,
+    'calls=' + t3._buttons[0].handlerCalls,
+  );
+  dispose();
+}
+
 console.log(failures === 0 ? '\nALL INTEGRATION TESTS PASSED' : '\n' + failures + ' FAILURES');
 process.exit(failures === 0 ? 0 : 1);

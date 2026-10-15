@@ -2,7 +2,7 @@
   "folium": 1,
   "id": "auto-skip",
   "name": "Auto skip",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "kifoii",
   "description": "与原版「无法播放时自动跳过」配合：登录类与网络类失败也能跳，可调倒计时与连续跳过上限，并在原版设置项下方加一排快捷开关。",
   "client": "client.mjs",

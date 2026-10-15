@@ -209,6 +209,13 @@ const GIVEUP_WINDOW_MS = 8000;
 const RESUME_DELAY_MS = 800;
 /** 失败事件与 DOM 卡片的关联窗口。 */
 const FAILURE_MEMORY_MS = 15000;
+/**
+ * 撞上限流后的退避时间。
+ *
+ * 限流是全局状态（最近一分钟跳得太快），这时候重扫得越勤也不会让跳过
+ * 更早发生，只会把日志刷爆。撞上就先把扫描静默一段时间。
+ */
+const RATE_LIMIT_BACKOFF_MS = 5000;
 
 /* =========================================================================
  * 纯函数（导出给测试）
@@ -506,6 +513,19 @@ export default function activate(folium) {
     } catch (e) {
       /* ignore */
     }
+  }
+
+  /**
+   * 被安全阀拦下时的告警，同一类最多每 WARN_COOLDOWN_MS 说一次。
+   *
+   * 限流与连跳上限都是持续状态：卡还在屏幕上时扫描会反复撞上它们。
+   * 每次都记一条的话，一分钟就能刷出几千行日志，把真正有用的记录淹掉。
+   */
+  function warnThrottled(msg) {
+    const now = Date.now();
+    if (now - lastThrottleWarnAt < WARN_COOLDOWN_MS) return;
+    lastThrottleWarnAt = now;
+    warn(msg);
   }
 
   const locale = detectLocale();
@@ -917,6 +937,8 @@ export default function activate(folium) {
   let countdownTimer = null;
   let pendingSkipTimer = null;
   let lastWarnAt = 0;
+  /** 被安全阀拦下时的告警节流（与 rateLimited 自己的提示分开计时）。 */
+  let lastThrottleWarnAt = 0;
   let disposed = false;
 
   /**
@@ -1135,18 +1157,29 @@ export default function activate(folium) {
   function performSkip(toast, label, settings) {
     const s = settings || readSettings();
     if (!s.enabled) return false;
+    // 记账必须发生在任何提前 return 之前。
+    //
+    // 这里踩过一次坑：限流时直接 return，noteToastAttempt() 没跑到，
+    // 于是 MAX_ATTEMPTS_PER_TOAST 的每卡预算永远不消耗、shouldHandleToast()
+    // 永远返回 true，而 markBusy() 也没执行、pendingUntil 不推进 ——
+    // scheduleSkip 看到 false 就 clearPlannedSkip()，紧接着 setTimeout(sweep)
+    // 又立刻重排同一张卡。日志里实测刷出过 31 秒 3610 条警告（中位间隔 0ms，
+    // 同一毫秒 24 条）。凡是「出手过」都要记下来，被拦下也算。
+    if (toast && toast.isConnected) noteToastAttempt(toast);
     if (rateLimited(s)) {
-      warn('触发每分钟限流，本次不跳：' + label);
+      warnThrottled('触发每分钟限流，本次不跳：' + label);
+      // 限流期间重扫没有意义，只会空转刷日志。
+      pendingUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
       return false;
     }
     if (capReached(s)) {
-      warn('已达连续跳过上限（' + s.maxConsecutiveSkips + '），本次不跳：' + label);
+      warnThrottled('已达连续跳过上限（' + s.maxConsecutiveSkips + '），本次不跳：' + label);
+      pendingUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
       return false;
     }
     noteSkip();
     markBusy(s.delayMs);
     if (toast && toast.isConnected) {
-      noteToastAttempt(toast);
       if (runSkipHandler(toast, s.skipMode)) {
         info('已跳过（' + s.skipMode + '）：' + label);
         return true;
@@ -1362,6 +1395,9 @@ export default function activate(folium) {
       const ok = performSkip(toast, label, s);
       if (!ok) {
         clearPlannedSkip();
+        // 被限流 / 撞连跳上限时不重扫：那是全局状态，重扫不会让它变好，
+        // 只会把同一张卡反复排队（实测能刷出每秒上百条日志）。
+        if (Date.now() < pendingUntil) return;
         warn('跳过失败，稍后可重试：' + label);
       }
       setTimeout(sweep, settings.delayMs + CLICK_VERIFY_MS);
