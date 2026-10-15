@@ -1,4 +1,4 @@
-## AI生成
+## 全程由AI生成
 
 # Auto skip
 
