@@ -16,7 +16,7 @@ Folia 内部有一张按失败原因分发的策略表。绝大多数情况宿�
 
 前两行的 `stopPlayback` 是 `true`，所以它会暂停播放、弹出常驻卡片，然后等你手动点。
 
-酷狗那边取不到 URL 时抛的是 `not-playable`，这个 code 在分类器里归到 `unknown`，正好落在这两行上。于是「明明是音源的问题，却要人手点」就发生了。
+酷狗那边取不到 URL 时抛的是 `not-playable`，这个 code 在分类器里归到 `unknown`，正好落在这两行上。于是「明明是音源的问题，却要手动跳过」就发生了。
 
 ## 怎么做的
 
@@ -31,26 +31,7 @@ Folium 1.4 没有播放失败事件，也没有拦截 toast 的钩子。提示�
 
 React 属性名是 `__reactProps$` 加一串随机字符，`readClickHandler()` 负责找。哪天读不到了会自动退回点击，不会默默什么都不做。
 
-## 原版倒计时现在可调
-
-原版这块是写死的：倒计时 5 秒，连续跳 2 首就放弃（把播放器置成 IDLE 停住）。现在：
-
-- `handleCountdown` 决定要不要接管「下架 / 播放出错」这两族倒计时卡片；`countdownDelayMs` 是接管后的延迟，默认 0，也就是立刻跳，不用等那 5 秒。
-- `maxConsecutiveSkips` 取代原来写死的 2，默认 0 表示不限。
-- `resumeAfterGiveUp` 打开时，宿主放弃之后会自动往前推一首，而不是停在那里。
-
-连续计数在下一首真的播起来之后归零，判断靠 `playback.getState()` 的 state。
-
-## 几个刻意没做的事
-
-- **不点第一个按钮。** mid-playback 场景下宿主可能拿不到 skip 回调，这时卡片渲染成 `[取消][重试]`，而取消只是关掉提示。代码只认文字是「跳过 / Skip / Lewati」的按钮，或者「有重试按钮 + 另有唯一一个既不是重试也不是取消的按钮」这个推断，否则返回 `null` 走 `playback.next()`。宁可不跳，也不点到取消。
-- **不碰别的文案。** 网络失败、超时、会员和版权那几类不管；「正在跳过」这种没有按钮的信息卡也不管。倒计时文案单独分类，只有 `handleCountdown` 开着才接管。
-- **同一张卡不重复出手。** React 拿 `type:text:nonce` 当 key，连续两首同样的文案会复用同一个 DOM 节点。所以去重是按时间窗做的，不是永久记住 —— 永久记住的话第二首就漏了。另外有单节点的出手次数上限。
-- 调完回调只看卡片有没有消失，不重复调，免得一跳两首。
-
-## 设置
-
-选项 → 模组 → Auto skip。
+## 功能
 
 | key | 默认 | 说明 |
 |---|---|---|
@@ -65,46 +46,14 @@ React 属性名是 `__reactProps$` 加一串随机字符，`readClickHandler()` 
 
 `maxConsecutiveSkips` 管连续几首就停手，`maxSkipsPerMinute` 管出手频率，防的是整张歌单全挂的时候疯狂连跳。
 
-## 装
+## 安装
 
 1. 把 `mod.json` 和 `client.mjs` 放进 `%APPDATA%\Folia\mods\auto-skip\`
 2. 选项 → 模组 → 重载（或者直接重启 Folia）
-3. 第一次会让你确认一次，信任是绑在内容摘要上的
 
-**改任何文件都会让确认失效，要重新点一次。** 这是宿主故意的，防止批准过的代码被换掉。
+## 声明
 
-`mod.json` 里写了 `"folia": ">=0.7.0 <0.8.0"`。升到 0.8 之后会直接报 `host-version-mismatch`，因为这些 DOM 特征是按 0.7.19 写的，报错比「装了没反应」好查。
-
-## 仓库里的东西
-
-安装只需要 `mod.json` 和 `client.mjs`。
-
-`variants/` 下是两个单策略版本，从 `client.mjs` 生成（锁掉 `skipMode` 并忽略设置项里的选择），想固定用一种行为就把对应的拷过去当 `client.mjs` 用。
-
-`tests/` 里是测试：
-
-```
-node tests/texts.test.mjs        文案分类和按钮识别，带反例
-node tests/integration.test.mjs  拿极简 DOM 替身跑 activate()，21 项
-node tests/variants.test.mjs     三个文件的策略行为
-node tests/manifest.test.mjs     用宿主自己的 manifest.cjs 校 mod.json
-node tests/digest.test.mjs       复算内容摘要
-```
-
-后两个用的是 Folia 自带的模块，它们在 `app.asar` 里，需要先解包一次：
-
-```
-npx asar extract "C:\Other\Folia\resources\app.asar" .\_folia_re\asar
-$env:FOLIA_MODSYSTEM_DIR = ".\_folia_re\asar\electron\modSystem"
-```
-
-找不到宿主模块时这两个会打印 `SKIP` 并以 0 退出，不会因为没装 Folia 就跑不起来。
-
-顺带一提，**别把 `variants/` 或 `tests/` 拷进安装目录** —— 摘要对目录里每一个文件都算，多一个文件摘要就变了，确认会失效。
-
-## 权限
-
-只声明 `playback.control`，用于 `playback.next()` 兜底和读播放状态判断有没有真的播起来。不联网，不读写文件。
+1.来自AI
 
 MIT。
 
