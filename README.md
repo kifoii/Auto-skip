@@ -1,4 +1,4 @@
-# 全程由AI生成
+# 本项目全程由deepseek代管
 
 ## Auto skip
 
