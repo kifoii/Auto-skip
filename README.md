@@ -1,4 +1,4 @@
-# 本项目全程由deepseek代管
+# 本项目全程由AI管理
 
 ## Auto skip
 
