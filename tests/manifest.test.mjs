@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const modDir = path.resolve(here, '..');
+/** 要提交/安装的是 mod/ 这个子目录（issue 表单的「模组目录」填 mod）。 */
+const modDir = path.resolve(here, '..', 'mod');
 
 /** Candidate directories that may hold the extracted modSystem/ modules. */
 function candidates() {
@@ -97,11 +98,27 @@ const plan = m.resolveLoadPlan(new Map([[man.id, man]]), {
 check('依赖图无失败节点', Object.keys(plan.failures ?? {}).length === 0, JSON.stringify(plan.failures));
 check('加载顺序包含本模组', plan.order.includes(man.id), JSON.stringify(plan.order));
 
-// 安装目录里只应该有 mod.json 与 client.mjs —— 宿主摘要覆盖目录下每一个文件。
+// mod/ 里只应该有 mod.json、client.mjs、preview.png（外加可选的 LICENSE / README）
+// —— 宿主摘要覆盖目录下每一个文件。
 const stray = readdirSync(modDir).filter(
-  (n) => n !== 'mod.json' && n !== 'client.mjs' && !n.startsWith('.')
+  (n) => !['mod.json', 'client.mjs', 'preview.png', 'LICENSE', 'README.md'].includes(n)
 );
-console.log('（本仓库根目录还包含以下内容，安装时不要拷进 mods 目录：' + stray.join(', ') + '）');
+check('mod/ 里没有多余文件', stray.length === 0, stray.join(','));
+
+// 仓库根与 mod/ 各有一份 README 与 LICENSE（前者是 GitHub 落地页，后者随模组分发）。
+// 两份不许漂移，否则提交上去的说明和仓库首页对不上。
+const repoRoot = path.resolve(modDir, '..');
+for (const name of ['README.md', 'LICENSE']) {
+  const rootCopy = path.join(repoRoot, name);
+  const modCopy = path.join(modDir, name);
+  const same =
+    existsSync(rootCopy) &&
+    existsSync(modCopy) &&
+    readFileSync(rootCopy, 'utf8') === readFileSync(modCopy, 'utf8');
+  check(`根目录与 mod/ 的 ${name} 一致`, same);
+}
+
+console.log('（仓库根的 tests/、tools/ 不会被签名，安装时也不要拷进 mods 目录）');
 
 console.log(failures === 0 ? '\nMANIFEST VALIDATION PASSED' : '\n' + failures + ' FAILURES');
 process.exit(failures === 0 ? 0 : 1);

@@ -1,636 +1,384 @@
-// 集成测试：用极简 DOM 替身驱动 activate()，覆盖「全面接管」的全部行为。
+// 集成测试：用假宿主驱动 activate()，覆盖 1.4.0 事件驱动的全部行为。
 //   node tests/integration.test.mjs
-import { __internals } from '../client.mjs';
+//
+// 1.4.0 起本模组不碰宿主 DOM，所以这个测试里没有 DOM 替身：
+// 只发 playback.failed / songChanged / stateChanged 事件，看 playback.next() 的调用。
+import activate from '../mod/client.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---- 极简 DOM --------------------------------------------------------------
-class FakeClassList {
-  constructor() {
-    this.set = new Set();
-  }
-  contains(n) {
-    return this.set.has(n);
-  }
-}
+/* ---- 假宿主 -------------------------------------------------------------- */
 
-class FakeEl {
-  constructor(tag, classes, text) {
-    this.nodeType = 1;
-    this.tagName = tag.toUpperCase();
-    this.children = [];
-    this.parentNode = null;
-    this.classList = new FakeClassList();
-    for (const c of classes || []) this.classList.set.add(c);
-    this.textContent = '';
-    this.isConnected = true;
-    this._texts = [];
-    if (text !== undefined) {
-      this._texts.push(text);
-      // 让按钮的 textContent 真实反映标签，否则标签匹配无从测试
-      this.textContent = text;
-    }
-    this.clicked = 0;
-    this.handlerCalls = 0;
-  }
-  get ownText() {
-    return this._texts.join(' ');
-  }
-  append(child) {
-    child.parentNode = this;
-    this.children.push(child);
-    return child;
-  }
-  querySelector(sel) {
-    if (sel === 'span') {
-      for (const c of this.children) if (c.tagName === 'SPAN') return c;
-      return null;
-    }
-    return null;
-  }
-  querySelectorAll(sel) {
-    if (sel !== 'button') return [];
-    const out = [];
-    const walk = (n) => {
-      for (const c of n.children) {
-        if (c.tagName === 'BUTTON') out.push(c);
-        walk(c);
-      }
-    };
-    walk(this);
-    return out;
-  }
-  click() {
-    this.clicked += 1;
-    if (this._removesToastOnClick && this.parentNode && this.parentNode.parentNode) {
-      this.parentNode.parentNode.removeChild(this.parentNode);
-    }
-  }
-  removeChild(child) {
-    this.children = this.children.filter((c) => c !== child);
-    child.parentNode = null;
-    child.isConnected = false;
-  }
-}
-
-/** 模拟 React：把处理器挂在 __reactProps$<random> 自有属性上。 */
-function attachHandler(btn, options, isRetry) {
-  btn.handlerCalls = 0;
-  if (options.withReactProps === false) return;
-  const key = '__reactProps$' + (options.reactKey ?? 'testkey1');
-  btn[key] = {
-    onClick() {
-      btn.handlerCalls += 1;
-      if (btn._removesToastOnClick && btn.parentNode && btn.parentNode.parentNode) {
-        btn.parentNode.parentNode.removeChild(btn.parentNode);
-      }
-    },
-  };
-  if (isRetry && options.retryRemovesToast === false) {
-    btn[key] = {
-      onClick() {
-        btn.handlerCalls += 1;
-      },
-    };
-  }
-}
-
-/** 按 Folia 的真实 DOM 结构造卡：[span 文案][按钮…] */
-function makeToast(text, labels, options = {}) {
-  const toast = new FakeEl('div', ['fixed', 'top-0', 'left-1/2', 'z-[210]']);
-  const span = new FakeEl('span', [], text);
-  span.textContent = text;
-  toast.append(span);
-  toast._buttons = [];
-  for (const label of labels) {
-    const b = new FakeEl('button', [], label);
-    b._removesToastOnClick = true;
-    attachHandler(b, options);
-    toast.append(b);
-    toast._buttons.push(b);
-  }
-  toast.textContent = text;
-  return toast;
-}
-
-/** 「暂时无法播放」卡：跳过在 cancel 槽位，重试在 action 槽位。 */
-function unavailableToast(options = {}) {
-  return makeToast(
-    options.text ?? '暂时无法播放这首歌',
-    [options.skipLabel ?? '跳过', options.retryLabel ?? '重试'],
-    options
-  );
-}
-
-/** 原版倒计时卡：取消在 cancel 槽位，跳过在 action 槽位（与上面相反）。 */
-function countdownToast(text = '歌曲已下架，10 秒后自动跳过', options = {}) {
-  return makeToast(text, [options.cancelLabel ?? '取消', options.skipLabel ?? '跳过'], options);
-}
-
-const body = new FakeEl('div', [], '');
-const observers = [];
-
-const fakeDocument = {
-  body,
-  documentElement: { lang: 'zh-CN' },
-  createElement: (t) => new FakeEl(t),
-  querySelectorAll(sel) {
-    if (sel !== '[class*="z-[210]"]') return [];
-    return body.children.filter((c) => c.classList.contains('z-[210]'));
-  },
-  addEventListener() {},
-};
-
-class FakeMutationObserver {
-  constructor(cb) {
-    this.cb = cb;
-    this.connected = false;
-    observers.push(this);
-  }
-  observe() {
-    this.connected = true;
-  }
-  disconnect() {
-    this.connected = false;
-  }
-  fire(nodes) {
-    if (this.connected) this.cb([{ addedNodes: nodes }]);
-  }
-}
-
-globalThis.document = fakeDocument;
-globalThis.MutationObserver = FakeMutationObserver;
-globalThis.window = globalThis;
-
-function addToast(t) {
-  body.append(t);
-  return t;
-}
-
-function clearToasts() {
-  body.children = [];
-}
-
-function lastObserver() {
-  return observers[observers.length - 1];
-}
-
-// ---- 假 folium API ---------------------------------------------------------
-function makeFolium(settings = {}) {
+/** 造一个假 folium，记录事件处理器、日志与 next() 调用。 */
+function makeFolium(settings = {}, options = {}) {
   const values = {
     enabled: true,
-    skipMode: 'direct',
+    skipUnplayable: true,
+    skipAuthNetwork: false,
     delayMs: 0,
-    countdownDelayMs: 0,
-    handleCountdown: true,
     maxSkipsPerMinute: 8,
-    maxConsecutiveSkips: 0,
-    resumeAfterGiveUp: true,
+    maxConsecutiveSkips: 3,
     ...settings,
   };
+  const handlers = new Map();
   const logs = [];
   const playback = {
-    nextCalled: 0,
+    nextCalls: 0,
+    song: options.song ?? { ref: 'song-1', id: '1', title: 'A', artist: 'B' },
     state: 'stopped',
     next() {
-      playback.nextCalled += 1;
+      playback.nextCalls += 1;
     },
     getState() {
-      return { song: null, state: playback.state, position: 0, duration: 0 };
+      return {
+        song: playback.song,
+        state: playback.state,
+        position: 0,
+        duration: 0,
+      };
     },
   };
-  return {
-    logs,
-    values,
-    playback,
-    folium: {
-      env: { context: 'main' },
-      log: {
-        info: (m) => logs.push(['info', m]),
-        warn: (m) => logs.push(['warn', m]),
-        error: (m) => logs.push(['error', m]),
-      },
-      registries: {
-        settingsSections: {
-          register() {
-            return { params: { get: () => ({ ...values }) } };
-          },
-        },
-      },
-      playback,
-    },
-  };
-}
-
-// ---- 用例 ------------------------------------------------------------------
-let failures = 0;
-function check(name, cond, extra = '') {
-  if (cond) {
-    console.log('PASS  ' + name);
-  } else {
-    failures += 1;
-    console.log('FAIL  ' + name + (extra ? ' :: ' + extra : ''));
-  }
-}
-
-const mod = await import('../client.mjs');
-
-// 1. 主路径：直接调用宿主 skip 回调，不派发 click
-{
-  clearToasts();
-  const { folium } = makeFolium();
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('直接调用了宿主的跳过回调', t._buttons[0].handlerCalls >= 1, 'calls=' + t._buttons[0].handlerCalls);
-  check('★没有派发任何 DOM click★', t._buttons[0].clicked === 0, 'clicked=' + t._buttons[0].clicked);
-  check('没有调「重试」', t._buttons[1].handlerCalls === 0);
-  check('提示卡已被摘除', t.isConnected === false);
-  dispose();
-}
-
-// 2. 新默认：接管原版倒计时（handleCountdown=true）
-{
-  clearToasts();
-  const { folium } = makeFolium({ handleCountdown: true });
-  const dispose = mod.default(folium);
-  const t = addToast(countdownToast());
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('接管倒计时：调用了「跳过」', t._buttons[1].handlerCalls >= 1, 'calls=' + t._buttons[1].handlerCalls);
-  check('接管倒计时：没有误调「取消」', t._buttons[0].handlerCalls === 0);
-  dispose();
-}
-
-// 3. handleCountdown=false 时完全不碰倒计时卡
-{
-  clearToasts();
-  const { folium } = makeFolium({ handleCountdown: false });
-  const dispose = mod.default(folium);
-  const t = addToast(countdownToast());
-  lastObserver().fire([t]);
-  await sleep(600);
-  check('关闭接管后倒计时不被触发', t._buttons[1].handlerCalls === 0 && t._buttons[0].handlerCalls === 0);
-  dispose();
-}
-
-// 4. 宿主「正在跳过」信息卡（无按钮）绝不插手
-{
-  clearToasts();
-  const { folium } = makeFolium();
-  const dispose = mod.default(folium);
-  const t = addToast(makeToast('歌曲已下架，正在跳过', []));
-  lastObserver().fire([t]);
-  await sleep(600);
-  check('「正在跳过」信息卡被忽略', true);
-  check('没有推队列', folium.playback.nextCalled === 0, 'next=' + folium.playback.nextCalled);
-  dispose();
-}
-
-// 5. 其它错误提示不动
-{
-  clearToasts();
-  const { folium } = makeFolium();
-  const dispose = mod.default(folium);
-  const t = addToast(makeToast('连接失败，无法获取这首歌，请检查网络后重试', ['重试', '跳过']));
-  lastObserver().fire([t]);
-  await sleep(600);
-  check('网络错误提示未被触发', t._buttons[0].handlerCalls === 0 && t._buttons[1].handlerCalls === 0);
-  check('网络错误也没推队列', folium.playback.nextCalled === 0);
-  dispose();
-}
-
-// 6. enabled=false 不动作
-{
-  clearToasts();
-  const { folium } = makeFolium({ enabled: false });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(600);
-  check('关闭后不动作', t._buttons[0].handlerCalls === 0);
-  dispose();
-}
-
-// 7. dispose 后不动作
-{
-  clearToasts();
-  const { folium } = makeFolium();
-  const dispose = mod.default(folium);
-  dispose();
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(600);
-  check('dispose 后不动作', t._buttons[0].handlerCalls === 0);
-}
-
-// 8. 英文文案 + 英文按钮 + 英文倒计时（不误判）
-{
-  clearToasts();
-  const { folium } = makeFolium({ handleCountdown: false });
-  const dispose = mod.default(folium);
-  const t1 = addToast(
-    unavailableToast({
-      text: "Can't play this song right now",
-      skipLabel: 'Skip',
-      retryLabel: 'Retry',
-    })
-  );
-  lastObserver().fire([t1]);
-  await sleep(600);
-  check('英文提示被正确触发', t1._buttons[0].handlerCalls >= 1);
-
-  const t2 = addToast(makeToast('Playback failed. Auto-skipping in 5s', ['Cancel', 'Skip']));
-  lastObserver().fire([t2]);
-  await sleep(600);
-  check('英文倒计时不被触发（已关闭接管）', t2._buttons[1].handlerCalls === 0);
-  dispose();
-}
-
-// 9. 限流：maxSkipsPerMinute=2，连来 4 张卡只应跳 2 次
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxSkipsPerMinute: 2, maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  for (let i = 0; i < 4; i += 1) {
-    const t = addToast(unavailableToast());
-    lastObserver().fire([t]);
-    await sleep(600);
-  }
-  const invoked = body.children.filter((c) => c._buttons[0] && c._buttons[0].handlerCalls > 0).length;
-  check('限流生效（不超过 2 次）', invoked <= 2, 'invoked=' + invoked);
-  dispose();
-}
-
-// 10. ★关键安全用例★ 只有 [取消][重试]（mid-playback 拿不到 skip 回调）
-//     必须改为 playback.next()，绝不能调「取消」把提示卡静默关掉。
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(makeToast('暂时无法播放这首歌', ['取消', '重试']));
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('没有误调「取消」', t._buttons[0].handlerCalls === 0, 'cancel=' + t._buttons[0].handlerCalls);
-  check('没有误调「重试」', t._buttons[1].handlerCalls === 0, 'retry=' + t._buttons[1].handlerCalls);
-  check('改用 playback.next() 推进队列', folium.playback.nextCalled >= 1, 'next=' + folium.playback.nextCalled);
-  dispose();
-}
-
-// 11. 未知语言包但提供「重试」+ 一个其它按钮 → 应识别出 skip 槽位
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(makeToast('暂时无法播放这首歌', ['XYZ', 'Retry']));
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('未知语言下按槽位推断并调用 skip', t._buttons[0].handlerCalls >= 1, 'calls=' + t._buttons[0].handlerCalls);
-  check('没有误调 Retry', t._buttons[1].handlerCalls === 0);
-  check('未派发 DOM click', t._buttons[0].clicked === 0);
-  dispose();
-}
-
-// 12. 拿不到 React props 时才退回 DOM 点击（兜底路径必须仍然可用）
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast({ withReactProps: false }));
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('无 React props 时退回 DOM 点击', t._buttons[0].clicked >= 1, 'clicked=' + t._buttons[0].clicked);
-  check('兜底路径没有误点重试', t._buttons[1].clicked === 0);
-  dispose();
-}
-
-// 13. 登录提示变体文案也要识别
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast({ text: '暂时无法播放这首歌，登录后可能可以播放' }));
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('登录提示变体被识别', t._buttons[0].handlerCalls >= 1);
-  dispose();
-}
-
-// 14. 同一张卡不重复触发（去重）
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  t._buttons[0]._removesToastOnClick = false;
-  t._buttons[0].__reactProps$testkey1.onClick = function () {
-    t._buttons[0].handlerCalls += 1;
-  };
-  const obs = lastObserver();
-  obs.fire([t]);
-  await sleep(500);
-  const first = t._buttons[0].handlerCalls;
-  obs.fire([t]);
-  obs.fire([t]);
-  await sleep(700);
-  check('同一张卡只触发一次', t._buttons[0].handlerCalls === first && first >= 1, 'first=' + first + ' total=' + t._buttons[0].handlerCalls);
-  check('未派发 DOM click', t._buttons[0].clicked === 0);
-  dispose();
-}
-
-// 15. skipMode='click' 只派发 click
-{
-  clearToasts();
-  const { folium } = makeFolium({ skipMode: 'click', maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('click 模式派发了 click', t._buttons[0].clicked >= 1, 'clicked=' + t._buttons[0].clicked);
-  dispose();
-}
-
-// 16. 连续跳过上限 maxConsecutiveSkips=2：第三张卡收手
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 2, maxSkipsPerMinute: 60 });
-  const dispose = mod.default(folium);
-  const toasts = [];
-  for (let i = 0; i < 3; i += 1) {
-    const t = addToast(unavailableToast());
-    toasts.push(t);
-    lastObserver().fire([t]);
-    await sleep(500);
-  }
-  const invoked = toasts.filter((t) => t._buttons[0].handlerCalls > 0).length;
-  check('连续上限生效（只跳 2 次）', invoked === 2, 'invoked=' + invoked);
-  dispose();
-}
-
-// 17. 连续上限 0 = 不限，一直跳到能播为止
-{
-  clearToasts();
-  const { folium } = makeFolium({ maxConsecutiveSkips: 0, maxSkipsPerMinute: 60 });
-  const dispose = mod.default(folium);
-  const toasts = [];
-  for (let i = 0; i < 5; i += 1) {
-    const t = addToast(unavailableToast());
-    toasts.push(t);
-    lastObserver().fire([t]);
-    await sleep(400);
-  }
-  const invoked = toasts.filter((t) => t._buttons[0].handlerCalls > 0).length;
-  check('0 = 不限（5 张卡都跳）', invoked === 5, 'invoked=' + invoked);
-  dispose();
-}
-
-// 18. 播放成功 → 连续计数归零（上限 2 时能一直跳下去）
-{
-  clearToasts();
-  const { folium, playback } = makeFolium({ maxConsecutiveSkips: 2, maxSkipsPerMinute: 60 });
-  const dispose = mod.default(folium);
-  const counts = [];
-  for (let i = 0; i < 3; i += 1) {
-    const t = addToast(unavailableToast());
-    lastObserver().fire([t]);
-    await sleep(400);
-    counts.push(t._buttons[0].handlerCalls);
-    // 模拟这一首真的播起来了
-    playback.state = 'playing';
-    lastObserver().fire([t]);
-    await sleep(200);
-    playback.state = 'stopped';
-  }
-  const invoked = counts.filter((c) => c > 0).length;
-  check('播成功后计数归零（3 张卡都跳）', invoked === 3, 'invoked=' + invoked);
-  dispose();
-}
-
-// 19. 宿主放弃（IDLE/stopped）后继续推进队列
-{
-  clearToasts();
-  const { folium, playback } = makeFolium({ resumeAfterGiveUp: true, maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(500);
-  check('先跳了一次', t._buttons[0].handlerCalls >= 1);
-  playback.state = 'stopped';
-  // 等 backstop 轮询到「放弃」并推队列
-  await sleep(3500);
-  check('宿主放弃后自动推进队列', folium.playback.nextCalled >= 1, 'next=' + folium.playback.nextCalled);
-  dispose();
-}
-
-// 20. resumeAfterGiveUp=false 时不推进
-{
-  clearToasts();
-  const { folium, playback } = makeFolium({ resumeAfterGiveUp: false, maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(500);
-  playback.state = 'stopped';
-  await sleep(3500);
-  check('关闭后不推队列', folium.playback.nextCalled === 0, 'next=' + folium.playback.nextCalled);
-  dispose();
-}
-
-// 21. 设置项注册被宿主拒绝时不影响自动跳过
-{
-  clearToasts();
   const folium = {
     env: { context: 'main' },
-    log: { info() {}, warn() {}, error() {} },
+    host: { folia: '0.7.20', folium: { major: 1, minor: options.minor ?? 5 } },
+    manifest: { permissions: ['playback.control'] },
+    log: {
+      info: (m) => logs.push(['info', m]),
+      warn: (m) => logs.push(['warn', m]),
+      error: (m) => logs.push(['error', m]),
+    },
     registries: {
       settingsSections: {
         register() {
-          throw new Error('settingsSections.register: settings must declare at least one valid field');
+          return { params: { get: () => ({ ...values }) } };
         },
       },
     },
-    playback: { nextCalled: 0, next() {}, getState: () => null },
+    events: {
+      on(type, handler) {
+        if (!handlers.has(type)) handlers.set(type, []);
+        handlers.get(type).push(handler);
+        return () => {
+          const list = handlers.get(type) || [];
+          const i = list.indexOf(handler);
+          if (i !== -1) list.splice(i, 1);
+        };
+      },
+    },
+    playback,
   };
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(700);
-  check('设置注册失败后仍能跳过', t._buttons[0].handlerCalls >= 1);
-  dispose();
+  return {
+    folium,
+    values,
+    logs,
+    playback,
+    /** 派发一个事件给所有订阅者。 */
+    fire(type, payload) {
+      const list = (handlers.get(type) || []).slice();
+      for (const h of list) h(payload);
+    },
+    /** 某级别的日志条数。 */
+    count(level) {
+      return logs.filter((l) => l[0] === level).length;
+    },
+    /** 是否记过包含某段文字的日志。 */
+    said(text) {
+      return logs.some((l) => String(l[1]).indexOf(text) !== -1);
+    },
+  };
 }
 
-// 22. 回归：撞限流后不能空转刷日志。
-//
-// 真实事故：performSkip 在限流时直接 return，noteToastAttempt() 没跑到，
-// 每卡预算永不消耗，scheduleSkip 看到 false 就重扫，31 秒刷出 3610 条警告
-// （中位间隔 0ms，同一毫秒 24 条）。这里钉住「告警条数必须是常数级」。
-{
-  clearToasts();
-  const { folium, logs } = makeFolium({ maxSkipsPerMinute: 2, maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  // 一张常驻的卡 + 反复触发扫描，模拟宿主不断重发失败卡
-  const t = addToast(unavailableToast());
-  for (let i = 0; i < 40; i += 1) {
-    lastObserver().fire([t]);
-    await sleep(25);
+/* ---- 断言 ---------------------------------------------------------------- */
+
+let failures = 0;
+function check(name, cond, extra = '') {
+  if (cond) console.log('  PASS  ' + name);
+  else {
+    failures += 1;
+    console.log('  FAIL  ' + name + (extra ? ' :: ' + extra : ''));
   }
-  const warns = logs.filter((l) => l[0] === 'warn').length;
-  check('限流后没有刷屏（告警 <= 12 条）', warns <= 12, 'warns=' + warns);
+}
+
+/** 一个标准的失败事件。 */
+function failEvent(reason, extra = {}) {
+  return {
+    song: { ref: 'song-1', id: '1', title: 'A', artist: 'B' },
+    reason,
+    phase: 'play',
+    willAutoSkip: false,
+    ...extra,
+  };
+}
+
+/**
+ * 让某首歌失败：宿主失败时 getState().song 就是这首歌，
+ * 所以先同步假宿主的当前歌曲再派发事件 —— 否则模组会（正确地）认为
+ * 「延迟期间已经换歌」而作废本次跳过。
+ */
+function failFor(h, ref, reason = 'unknown', extra = {}) {
+  const song = { ref, id: ref, title: ref, artist: '' };
+  h.playback.song = song;
+  h.fire('playback.failed', { song, reason, phase: 'play', willAutoSkip: false, ...extra });
+}
+
+/* ---- 1. 基本跳过 --------------------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('unknown 失败会调用 next()', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
+  check('日志记了跳过', h.said('已跳过'), JSON.stringify(h.logs));
   dispose();
 }
 
-// 23. 回归：撞限流时也要消耗每卡预算（不能无限重排同一张卡）
+/* ---- 2. willAutoSkip 时不插手 -------------------------------------------- */
+
 {
-  clearToasts();
-  const { folium } = makeFolium({ maxSkipsPerMinute: 1, maxConsecutiveSkips: 0 });
-  const dispose = mod.default(folium);
-  const t = addToast(unavailableToast());
-  lastObserver().fire([t]);
-  await sleep(400);
-  const first = t._buttons[0].handlerCalls;
-  for (let i = 0; i < 30; i += 1) {
-    lastObserver().fire([t]);
-    await sleep(20);
+  const h = makeFolium({ delayMs: 0 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('restricted', { willAutoSkip: true }));
+  await sleep(120);
+  check('willAutoSkip 时不调用 next()', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 3. restore 阶段不跳 ------------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown', { phase: 'restore' }));
+  await sleep(120);
+  check('restore 阶段不调用 next()', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 4. 登录 / 网络类默认不跳，打开后才跳 -------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0, skipAuthNetwork: false });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('auth'));
+  h.fire('playback.failed', failEvent('network'));
+  await sleep(150);
+  check('auth/network 默认不跳', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+{
+  const h = makeFolium({ delayMs: 0, skipAuthNetwork: true });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('auth'));
+  await sleep(120);
+  check('打开开关后 auth 会跳', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 5. 总开关 ----------------------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0, enabled: false });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('总开关关闭时不跳', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 6. skipUnplayable 关闭 ------------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0, skipUnplayable: false });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('skipUnplayable 关闭时不跳', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 7. 连续上限 --------------------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0, maxConsecutiveSkips: 2, maxSkipsPerMinute: 60 });
+  const dispose = activate(h.folium);
+  failFor(h, 's1');
+  await sleep(80);
+  failFor(h, 's2');
+  await sleep(80);
+  failFor(h, 's3');
+  await sleep(120);
+  check('连续上限 2 生效（只跳 2 次）', h.playback.nextCalls === 2, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+{
+  const h = makeFolium({ delayMs: 0, maxConsecutiveSkips: 0, maxSkipsPerMinute: 60 });
+  const dispose = activate(h.folium);
+  for (let i = 1; i <= 5; i += 1) {
+    failFor(h, 's' + i);
+    await sleep(50);
   }
-  check('限流后同一张卡不再被反复调用', t._buttons[0].handlerCalls === first, 
-    'first=' + first + ' now=' + t._buttons[0].handlerCalls);
+  await sleep(120);
+  check('0 = 不限（5 首都跳）', h.playback.nextCalls === 5, 'next=' + h.playback.nextCalls);
   dispose();
 }
 
-// 24. 退避是暂时的：窗口过后仍能继续跳过。
-//     用连跳上限触发退避（限流窗口是 60 秒，等不起）；退避过后靠
-//     「播放跑起来了」把连续计数归零，就能接着跳。
+/* ---- 8. 播起来后计数归零 ------------------------------------------------- */
+
 {
-  clearToasts();
-  const { folium, playback } = makeFolium({
-    maxConsecutiveSkips: 1,
-    maxSkipsPerMinute: 60,
-    resumeAfterGiveUp: false,
-  });
-  const dispose = mod.default(folium);
-  const t1 = addToast(unavailableToast());
-  lastObserver().fire([t1]);
-  await sleep(500);
-  check('第一张卡已跳过', t1._buttons[0].handlerCalls >= 1);
+  const h = makeFolium({ delayMs: 0, maxConsecutiveSkips: 2, maxSkipsPerMinute: 60 });
+  const dispose = activate(h.folium);
+  failFor(h, 's1');
+  await sleep(60);
+  failFor(h, 's2');
+  await sleep(60);
+  // 播起来了 → 计数归零
+  h.playback.state = 'playing';
+  h.fire('playback.stateChanged', { state: 'playing' });
+  await sleep(40);
+  h.playback.state = 'stopped';
+  failFor(h, 's3');
+  await sleep(60);
+  failFor(h, 's4');
+  await sleep(120);
+  check('播成功后计数归零（共跳 4 首）', h.playback.nextCalls === 4, 'next=' + h.playback.nextCalls);
+  dispose();
+}
 
-  // 第二张卡撞连跳上限 → 进入退避
-  const t2 = addToast(unavailableToast({ reactKey: 'testkey2' }));
-  lastObserver().fire([t2]);
-  await sleep(400);
-  check('撞上限时不跳', t2._buttons[0].handlerCalls === 0, 'calls=' + t2._buttons[0].handlerCalls);
+/* ---- 9. 每分钟限流 ------------------------------------------------------- */
 
-  // 退避窗口过掉，并且播放真的跑起来了（连续计数归零）
-  playback.state = 'playing';
-  await sleep(5600);
-  const t3 = addToast(unavailableToast({ reactKey: 'testkey3' }));
-  lastObserver().fire([t3]);
-  await sleep(700);
-  check(
-    '退避过后新卡仍会跳',
-    t3._buttons[0].handlerCalls >= 1,
-    'calls=' + t3._buttons[0].handlerCalls,
+{
+  const h = makeFolium({ delayMs: 0, maxSkipsPerMinute: 2, maxConsecutiveSkips: 0 });
+  const dispose = activate(h.folium);
+  for (let i = 1; i <= 5; i += 1) {
+    failFor(h, 's' + i);
+    await sleep(40);
+  }
+  await sleep(120);
+  check('每分钟上限 2 生效', h.playback.nextCalls === 2, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 10. 限流后不刷屏（1.3.0 的真实事故回归） ---------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0, maxSkipsPerMinute: 2, maxConsecutiveSkips: 0 });
+  const dispose = activate(h.folium);
+  for (let i = 1; i <= 40; i += 1) {
+    failFor(h, 's' + i);
+    await sleep(5);
+  }
+  await sleep(150);
+  check('限流后告警不刷屏（warn <= 6 条）', h.count('warn') <= 6, 'warn=' + h.count('warn'));
+  check('限流后确实没有再跳（只跳 2 首）', h.playback.nextCalls === 2, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 11. 同一首歌不重复排队 ---------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 60, maxSkipsPerMinute: 60 });
+  const dispose = activate(h.folium);
+  const ev = failEvent('unknown');
+  h.fire('playback.failed', ev);
+  h.fire('playback.failed', ev);
+  h.fire('playback.failed', ev);
+  await sleep(220);
+  check('同一首歌连发三次只跳一次', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 12. 延迟期间换歌则作废 ---------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 300, maxSkipsPerMinute: 60 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown', { song: { ref: 'old' } }));
+  await sleep(60);
+  // 宿主已经换了歌
+  h.playback.song = { ref: 'new' };
+  h.fire('playback.songChanged', { song: { ref: 'new' } });
+  await sleep(420);
+  check('换歌后作废排队的跳过', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 13. dispose 后不再动作 ---------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 200, maxSkipsPerMinute: 60 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  dispose();
+  await sleep(320);
+  check('dispose 后不跳', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+}
+
+/* ---- 14. 宿主不支持时不启用 ---------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0 }, { minor: 4 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('Folium 1.4 下不跳', h.playback.nextCalls === 0, 'next=' + h.playback.nextCalls);
+  check('提示了版本过低', h.said('版本过低'), JSON.stringify(h.logs));
+  dispose();
+}
+
+/* ---- 15. 没有 playback.control 时失败但不崩 ------------------------------ */
+
+{
+  const h = makeFolium({ delayMs: 0 });
+  h.folium.playback.next = () => {
+    throw new Error('permission-denied:playback.control');
+  };
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(150);
+  check('next() 抛权限错时不崩', true);
+  check('记了失败日志', h.count('error') >= 1, 'error=' + h.count('error'));
+  dispose();
+}
+
+/* ---- 16. 设置注册失败仍能工作 -------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0 });
+  h.folium.registries.settingsSections.register = () => {
+    throw new Error('settingsSections.register: boom');
+  };
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  // 拿不到 params 时用默认值，默认 delayMs 是 250ms。
+  await sleep(450);
+  check('设置注册失败仍会跳（用默认值）', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
+  dispose();
+}
+
+/* ---- 17. 不碰宿主 DOM ---------------------------------------------------- */
+
+{
+  const h = makeFolium({ delayMs: 0 });
+  const touched = [];
+  const realDocument = globalThis.document;
+  globalThis.document = new Proxy(
+    {},
+    {
+      get(_t, prop) {
+        touched.push(String(prop));
+        return undefined;
+      },
+    }
   );
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(150);
+  globalThis.document = realDocument;
+  check('全程没有访问 document', touched.length === 0, touched.join(','));
+  check('没有 document 也照样跳', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
   dispose();
 }
 

@@ -3,17 +3,20 @@
 # 宽高比 1.5~2.0、不超过 1 MB。改完样式重跑本脚本即可。
 #
 #   python tools/make-preview.py
+#
+# 输出到 mod/preview.png —— 只有 mod/ 里的文件会被提交与签名。
 
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1280, 720
-OUT = "preview.png"
+OUT = "mod/preview.png"
 
 BG_TOP = (11, 11, 15)
 BG_BOTTOM = (24, 22, 30)
 ACCENT = (239, 68, 68)
 TEXT = (245, 245, 247)
 DIM = (150, 150, 160)
+GOOD = (110, 231, 183)
 MSYH = r"C:\Windows\Fonts\msyh.ttc"
 MSYH_BOLD = r"C:\Windows\Fonts\msyhbd.ttc"
 SEGOE = r"C:\Windows\Fonts\segoeuib.ttf"
@@ -37,7 +40,6 @@ def pill(draw, box, radius, fill, outline=None, width=1):
 
 
 # 背景渐变
-img = Image.new("RGB", (W, H), BG_TOP)
 top = Image.new("RGB", (1, H))
 for y in range(H):
     t = y / (H - 1)
@@ -68,13 +70,13 @@ pill(draw, (1052, 296, 1176, 368), radius=36, fill=(255, 255, 255, 255))
 centered(draw, 1114, 311, "重试", font(MSYH_BOLD, 30), (24, 24, 27))
 
 # 模组替用户按下「跳过」
-text_at(draw, (76, 432), "↑ 本模组直接调用宿主的跳过回调，不再等用户手动点", font(MSYH, 27), (110, 231, 183))
+text_at(draw, (76, 432), "↑ 订阅 playback.failed，不等用户手动点", font(MSYH, 27), GOOD)
 
 # 三条特性
 chips = [
-    "接管原版倒计时",
-    "连续跳过上限可调",
-    "支持模拟点击",
+    "补上登录 / 网络类",
+    "不碰宿主界面",
+    "连跳上限可调",
 ]
 x = 72
 f = font(MSYH, 26)

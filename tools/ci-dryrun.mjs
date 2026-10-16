@@ -10,6 +10,9 @@
 //
 // 它会：① 按 source.mjs 的规则把「提交目录」暂存一份（去掉点开头项与 node_modules）；
 // ② 用 checkModTree 跑格式检查；③ 打印会出现在 issue 里的文件清单与签名摘要。
+//
+// 提交目录是仓库里的 mod/（表单的「模组目录」填 mod）。CI 会用
+// <repo>@<ref> 下的这个目录当模组根，所以这里也照做。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,6 +21,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
+/** 提交目录相对仓库根的位置；表单里的「模组目录」要填这个。 */
+const SUBMISSION_PATH = 'mod';
+const sourceDir = path.join(repoRoot, SUBMISSION_PATH);
 
 /** CI 里 mods/community 下已有的 id；用于检测撞名与「依赖不在仓库里」的警告。 */
 const KNOWN_MOD_IDS = [
@@ -81,11 +87,11 @@ const stage = (source, dest) => {
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-skip-ci-'));
 const modDir = path.join(tmp, 'auto-skip');
-stage(repoRoot, modDir);
+stage(sourceDir, modDir);
 
 const manifest = JSON.parse(fs.readFileSync(path.join(modDir, 'mod.json'), 'utf8'));
 
-console.log('\n=== 提交目录（会被 CI 收录的文件）===');
+console.log(`\n=== 提交目录（仓库 ${SUBMISSION_PATH}/ → CI 收录的文件）===`);
 const files = collectSignedFiles(modDir);
 for (const file of files) {
     const size = fs.statSync(file.absolute).size;
