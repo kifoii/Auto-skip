@@ -281,7 +281,7 @@ export default function activate(folium) {
     safety: { 'zh-CN': T.gSafety, en: T.gSafety, id: T.gSafety },
   });
 
-  let params = null;
+  let settings = null;
   try {
     if (folium && folium.registries && folium.registries.settingsSections) {
       const handle = folium.registries.settingsSections.register({
@@ -372,7 +372,12 @@ export default function activate(folium) {
           },
         ],
       });
-      params = handle && handle.params ? handle.params : null;
+      /*
+       * Folium 2 起 register() 只返回 .settings（subscribe 改名 onChange）；
+       * .params 在 1.5–1.x 上是旧名，1.7 里只剩弃用兼容层。两个都读，新名优先。
+       */
+      const access = (handle && handle.settings) || (handle && handle.params) || null;
+      settings = access;
     }
   } catch (err) {
     fail('注册设置区块失败（不影响自动跳过）', err);
@@ -382,9 +387,9 @@ export default function activate(folium) {
     const out = {};
     const keys = Object.keys(DEFAULT_SETTINGS);
     for (let i = 0; i < keys.length; i += 1) out[keys[i]] = DEFAULT_SETTINGS[keys[i]];
-    if (!params) return out;
+    if (!settings) return out;
     try {
-      const v = params.get();
+      const v = settings.get();
       if (!v || typeof v !== 'object') return out;
       if (typeof v.enabled === 'boolean') out.enabled = v.enabled;
       if (typeof v.skipUnplayable === 'boolean') out.skipUnplayable = v.skipUnplayable;
@@ -601,12 +606,21 @@ export default function activate(folium) {
   subscribe('playback.songChanged', onSongChanged);
   subscribe('playback.stateChanged', onStateChanged);
 
-  let paramsOff = null;
+  /* 设置随时可读，这里只是保持订阅存活。新名 onChange，旧宿主上是 subscribe。 */
+  let settingsOff = null;
   try {
-    if (params && typeof params.subscribe === 'function') {
-      paramsOff = params.subscribe(function () {
-        /* 设置随时可读，这里只是保持订阅存活 */
-      });
+    if (settings) {
+      const on =
+        typeof settings.onChange === 'function'
+          ? settings.onChange
+          : typeof settings.subscribe === 'function'
+            ? settings.subscribe
+            : null;
+      if (on) {
+        settingsOff = on.call(settings, function () {
+          /* 无需响应，读设置时现取 */
+        });
+      }
     }
   } catch (err) {
     /* 订阅设置失败不影响功能 */
@@ -632,13 +646,13 @@ export default function activate(folium) {
       }
     }
     disposers.length = 0;
-    if (typeof paramsOff === 'function') {
+    if (typeof settingsOff === 'function') {
       try {
-        paramsOff();
+        settingsOff();
       } catch (err) {
         /* 忽略 */
       }
-      paramsOff = null;
+      settingsOff = null;
     }
     recentSkips = [];
     consecutiveSkips = 0;

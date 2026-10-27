@@ -50,7 +50,21 @@ function makeFolium(settings = {}, options = {}) {
     registries: {
       settingsSections: {
         register() {
-          return { params: { get: () => ({ ...values }) } };
+          /* options.legacySettings 模拟 Folium 1.x 的旧名 .params / subscribe */
+          if (options.legacySettings) {
+            return {
+              params: {
+                get: () => ({ ...values }),
+                subscribe: () => () => {},
+              },
+            };
+          }
+          return {
+            settings: {
+              get: () => ({ ...values }),
+              onChange: () => () => {},
+            },
+          };
         },
       },
     },
@@ -380,6 +394,69 @@ function failFor(h, ref, reason = 'unknown', extra = {}) {
   check('全程没有访问 document', touched.length === 0, touched.join(','));
   check('没有 document 也照样跳', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
   dispose();
+}
+
+/* ---- 18. 设置访问器：新名 .settings / onChange 与旧名 .params / subscribe ---- */
+
+{
+  /* 新版宿主（Folium 2 契约）：只给 .settings + onChange */
+  const h = makeFolium({ delayMs: 0, maxConsecutiveSkips: 1 });
+  const dispose = activate(h.folium);
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('新名 .settings 能读到设置', h.playback.nextCalls === 1, 'next=' + h.playback.nextCalls);
+  dispose();
+
+  /* 旧版宿主（Folium 1.x）：只有 .params + subscribe，仍要能工作 */
+  const old = makeFolium({ delayMs: 0, maxConsecutiveSkips: 1, legacySettings: true });
+  const disposeOld = activate(old.folium);
+  old.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('旧名 .params 仍能读到设置', old.playback.nextCalls === 1, 'next=' + old.playback.nextCalls);
+  disposeOld();
+}
+
+/* ---- 19. 新旧两套同时存在时取新名，且绝不碰弃用的 .params --------------- */
+
+{
+  const h = makeFolium({ delayMs: 0 });
+  const stats = { get: 0, onChange: 0, subscribe: 0, legacyGet: 0, offCalled: 0 };
+  h.folium.registries.settingsSections.register = () => ({
+    settings: {
+      get: () => {
+        stats.get += 1;
+        return { ...h.values };
+      },
+      onChange: () => {
+        stats.onChange += 1;
+        return () => {
+          stats.offCalled += 1;
+        };
+      },
+    },
+    params: {
+      get: () => {
+        stats.legacyGet += 1;
+        return { ...h.values };
+      },
+      subscribe: () => {
+        stats.subscribe += 1;
+        return () => {};
+      },
+    },
+  });
+
+  const dispose = activate(h.folium);
+  check('订阅走新名 onChange', stats.onChange === 1, 'onChange=' + stats.onChange);
+  check('没有走旧名 subscribe', stats.subscribe === 0, 'subscribe=' + stats.subscribe);
+
+  h.fire('playback.failed', failEvent('unknown'));
+  await sleep(120);
+  check('读设置走新名 settings.get', stats.get > 0 && h.playback.nextCalls === 1, 'get=' + stats.get);
+  check('旧名 params.get 一次都没被调用', stats.legacyGet === 0, 'legacyGet=' + stats.legacyGet);
+
+  dispose();
+  check('dispose 调用了 onChange 返回的退订函数', stats.offCalled === 1, 'off=' + stats.offCalled);
 }
 
 console.log(failures === 0 ? '\nALL INTEGRATION TESTS PASSED' : '\n' + failures + ' FAILURES');

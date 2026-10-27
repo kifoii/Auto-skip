@@ -51,6 +51,8 @@ Folium 1.5 有 `playback.failed` 事件，这是正路。事件带 `reason`（�
 
 设置只有一处：选项 → 模组 → 展开 Auto skip（官方 `settingsSections` 接口）。
 
+读写设置走的是 Folium 的新名 `settings.get()` / `settings.onChange()`。旧名 `params` 和 `params.subscribe` 从 Folium 2 起移除，本模组不用它们；在 1.5/1.6 那种只有旧名的宿主上会自己退回旧名，两代都能跑。
+
 ### 安装
 
 1. 把 `mod.json`、`client.mjs`（和 `preview.png`）放进 `%APPDATA%\Folia\mods\auto-skip\`
@@ -67,4 +69,4 @@ MIT。
 
 ---
 
-*English note: a Folium client mod for Folia 0.7.20. Stock Folia's "skip unplayable songs" setting moves `restricted`, `taken-down` and `unknown` failures to a countdown, but `auth` and `network` failures stay hard-coded to never skip — the card just sits there. This mod takes those over. It listens to `playback.failed` and respects `willAutoSkip` so it never races the host's own countdown, and it only ever calls `playback.next()` — no host DOM, no injected styles. Settings live in the mods panel via `settingsSections`. One caveat: `unknown` failures that hint "signing in may help" are treated as `auth` by the host, but the public API does not distinguish them from other `unknown` failures, so they are skipped too unless `skipUnplayable` is turned off.*
+*English note: a Folium client mod for Folia 0.7.20. Stock Folia's "skip unplayable songs" setting moves `restricted`, `taken-down` and `unknown` failures to a countdown, but `auth` and `network` failures stay hard-coded to never skip — the card just sits there. This mod takes those over. It listens to `playback.failed` and respects `willAutoSkip` so it never races the host's own countdown, and it only ever calls `playback.next()` — no host DOM, no injected styles. Settings live in the mods panel via `settingsSections`, read through the Folium 2 names `settings.get()` / `settings.onChange()` (the old `params` names are gone in Folium 2, but are still honoured on 1.5/1.6 hosts). One caveat: `unknown` failures that hint "signing in may help" are treated as `auth` by the host, but the public API does not distinguish them from other `unknown` failures, so they are skipped too unless `skipUnplayable` is turned off.*
